@@ -239,6 +239,8 @@ app.post('/voice', async (req, res) => {
       return res.status(400).json({ error: 'Invalid request format' });
     }
 
+    console.log('Received voice input:', req.body.SpeechResult);
+
     const callSid = req.body.CallSid || 'test-' + Date.now();
     if (!sessions[callSid]) {
       sessions[callSid] = {
@@ -248,6 +250,9 @@ app.post('/voice', async (req, res) => {
       };
     }
 
+    // Use the SpeechResult from Twilio in the OpenAI prompt
+    const userMessage = req.body.SpeechResult || 'Hello';
+    
     const chat = await openai.chat.completions.create({
       model: 'gpt-3.5-turbo',
       messages: [
@@ -256,7 +261,7 @@ app.post('/voice', async (req, res) => {
           content: `You are an insurance call assistant. Keep responses under 2 sentences. 
                     Current call from: ${req.body.From}. Be polite and professional.`
         },
-        { role: 'user', content: JSON.stringify(req.body) }
+        { role: 'user', content: userMessage }
       ],
       temperature: 0.5
     });
@@ -267,39 +272,80 @@ app.post('/voice', async (req, res) => {
     // Add to session history
     sessions[callSid].history.push({
       timestamp: new Date(),
-      request: req.body,
+      request: { from: req.body.From, speech: userMessage },
       response: reply
     });
 
-    const ttsResponse = await axios.post(
-      `https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}`,
-      { 
-        text: reply, 
-        model_id: 'eleven_turbo_v2', 
-        voice_settings: { 
-          stability: 0.35, 
-          similarity_boost: 0.65 
-        } 
-      },
-      { 
-        headers: { 
-          'xi-api-key': ELEVENLABS_API_KEY,
-          'Content-Type': 'application/json'
-        },
-        responseType: 'stream',
-        timeout: 10000
+    // For Twilio, we need to return TwiML
+    // Option 1: Generate audio file and serve it
+    const audioFileName = `response-${Date.now()}.mp3`;
+    const audioFilePath = path.join(__dirname, 'public', audioFileName);
+    
+    try {
+      // Make directory if it doesn't exist
+      if (!fs.existsSync(path.join(__dirname, 'public'))) {
+        fs.mkdirSync(path.join(__dirname, 'public'), { recursive: true });
       }
-    );
-
-    res.set('Content-Type', 'audio/mpeg');
-    ttsResponse.data.pipe(res);
-
+      
+      // Generate audio
+      const ttsResponse = await axios.post(
+        `https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}`,
+        { 
+          text: reply, 
+          model_id: 'eleven_turbo_v2', 
+          voice_settings: { 
+            stability: 0.35, 
+            similarity_boost: 0.65 
+          } 
+        },
+        { 
+          headers: { 
+            'xi-api-key': ELEVENLABS_API_KEY,
+            'Content-Type': 'application/json'
+          },
+          responseType: 'arraybuffer',
+          timeout: 10000
+        }
+      );
+      
+      // Save the audio file
+      fs.writeFileSync(audioFilePath, Buffer.from(ttsResponse.data));
+      
+      // Return TwiML to play the audio file and continue the conversation
+      res.type('text/xml');
+      res.send(`
+        <Response>
+          <Play>${RENDER_BASE_URL}/public/${audioFileName}</Play>
+          <Gather input="speech" action="${RENDER_BASE_URL}/voice" method="POST" timeout="3" speechTimeout="auto">
+            <Say></Say>
+          </Gather>
+          <Say>I didn't hear anything. Goodbye for now.</Say>
+        </Response>
+      `);
+    } catch (audioErr) {
+      console.error('Audio generation error:', audioErr);
+      
+      // Fallback to TTS if audio generation fails
+      res.type('text/xml');
+      res.send(`
+        <Response>
+          <Say>${reply}</Say>
+          <Gather input="speech" action="${RENDER_BASE_URL}/voice" method="POST" timeout="3" speechTimeout="auto">
+            <Say></Say>
+          </Gather>
+          <Say>I didn't hear anything. Goodbye for now.</Say>
+        </Response>
+      `);
+    }
   } catch (err) {
     console.error('/voice error:', err.response?.data || err.message);
-    res.status(500).json({ 
-      error: 'Voice generation failed',
-      details: err.response?.data || err.message
-    });
+    res.type('text/xml');
+    res.send(`
+      <Response>
+        <Say>I'm sorry, I encountered an error. Please try again later.</Say>
+        <Hangup/>
+      </Response>
+    `);
   }
 });
 
@@ -318,10 +364,16 @@ app.post('/twilio-webhook', async (req, res) => {
       return res.status(403).send('Invalid Twilio request');
     }
 
+    console.log('Incoming call from:', req.body.From);
+    
     res.type('text/xml');
     res.send(`
       <Response>
         <Play>${RENDER_BASE_URL}/public/intro1.mp3</Play>
+        <Gather input="speech" action="${RENDER_BASE_URL}/voice" method="POST" timeout="3" speechTimeout="auto">
+          <Say>Please let me know how I can assist you today.</Say>
+        </Gather>
+        <Say>I didn't hear anything. Please call back when you're ready to chat.</Say>
       </Response>
     `);
   } catch (err) {
@@ -329,6 +381,7 @@ app.post('/twilio-webhook', async (req, res) => {
     res.status(500).send('Internal Server Error');
   }
 });
+
 
 // Generate intro variations on startup
 (async () => {
