@@ -7,6 +7,10 @@ const OpenAI = require('openai');
 const twilio = require('twilio');
 
 const app = express();
+
+// ─── DEBUG: Log whether the OpenAI key is present ───────────────────────────────
+console.log("🔑 OPENAI_API_KEY set?", !!process.env.OPENAI_API_KEY);
+
 const PORT = process.env.PORT || 10000;
 
 // ─── API KEYS FROM ENVIRONMENT ───────────────────────────────────────────────────
@@ -29,7 +33,7 @@ const sessions = {};
 
 // ─── RESPONSE TEMPLATES & HELPERS ────────────────────────────────────────────────
 const responseTemplates = {
-  greeting: [ /* … your greetings … */ ],
+  greeting: [ /* … */ ],
   insuranceContinuity: [ /* … */ ],
   insuranceCompany: [ /* … */ ],
   duration: [ /* … */ ],
@@ -147,7 +151,6 @@ app.use('/public', express.static(path.join(__dirname, 'public')));
 
 app.post('/voice', async (req, res) => {
   try {
-    // Simple echo-back AI response → TTS
     const chat = await openai.chat.completions.create({
       model: 'gpt-4o-mini',
       messages: [
