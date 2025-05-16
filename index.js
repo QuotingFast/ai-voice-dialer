@@ -1,146 +1,123 @@
 require('dotenv').config();
 const express = require('express');
 const fs = require('fs-extra');
-const axios = require('axios');
-const { OpenAI } = require('openai');
 const path = require('path');
+const axios = require('axios');
+const { Configuration, OpenAIApi } = require('openai');
+const twilio = require('twilio');
 
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+// load credentials & routing numbers from environment
+const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
+const ELEVENLABS_VOICE_ID = process.env.ELEVENLABS_VOICE_ID;
+const OPENAI_API_KEY      = process.env.OPENAI_API_KEY;
+const TWILIO_ACCOUNT_SID  = process.env.TWILIO_ACCOUNT_SID;
+const TWILIO_AUTH_TOKEN   = process.env.TWILIO_AUTH_TOKEN;
+const INSURED_NUMBER      = process.env.INSURED_NUMBER;
+const UNINSURED_NUMBER    = process.env.UNINSURED_NUMBER;
 
-fs.ensureDirSync('./public');
-fs.ensureDirSync('./logs');
+const openaiConfig = new Configuration({ apiKey: OPENAI_API_KEY });
+const openai       = new OpenAIApi(openaiConfig);
+const twilioClient = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
+
+// ensure folders exist
+fs.ensureDirSync(path.join(__dirname, 'public'));
+fs.ensureDirSync(path.join(__dirname, 'logs'));
+
+// generate two intro MP3s at startup
+;(async () => {
+  try {
+    console.log('Starting to generate intro audio variations...');
+    await generateIntro('intro_formal', 0.75);
+    await generateIntro('intro_casual', 0.90);
+    console.log('Successfully generated all intro variations');
+  } catch (err) {
+    console.error('Error generating intros:', err);
+  }
+})();
+
+/**
+ * Creates a TTS MP3 with ElevenLabs
+ * @param {string} name     file basename
+ * @param {number} boost    similarity_boost & stability (0–1)
+ */
+async function generateIntro(name, boost) {
+  const text = name === 'intro_formal'
+    ? 'Hello, this is QuotingFast calling about the car insurance quote you requested online.'
+    : 'Hey there! QuotingFast here about that car insurance quote you just asked for online.';
+  console.log(`Generating ${name}.mp3 (boost=${boost})`);
+  const resp = await axios.post(
+    `https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}`,
+    { text, voice_settings: { stability: boost, similarity_boost: boost } },
+    { headers: { 'xi-api-key': ELEVENLABS_API_KEY }, responseType: 'arraybuffer' }
+  );
+  fs.writeFileSync(path.join(__dirname, 'public', `${name}.mp3`), resp.data);
+  console.log(`Saved public/${name}.mp3`);
+}
 
 app.use('/public', express.static(path.join(__dirname, 'public')));
 app.use(express.urlencoded({ extended: true }));
+app.use(express.json());
 
-const sessions = {};
-
-// 👇 Shortened, realistic system prompt for Tom
-const SYSTEM_PROMPT = {
-  role: 'system',
-  content: `
-Your name is Tom. You are a friendly, helpful outbound agent calling from Quoting Fast.
-
-You're calling someone who just completed an auto insurance quote request online.
-
-Start with:
-"Hi this is Tom from Quoting Fast calling about the auto insurance quote you just submitted. Do you have a sec to review the rates we found?"
-
-Then, ask one question at a time to confirm:
-1. Are they currently insured?
-2. If yes, how long? (months/years)
-3. Who they're insured with
-
-Then ask permission to bring on a licensed agent to go over the quotes.
-
-Be confident and casual. Use phrases like "Cool", "Nice", "Awesome", "Gotcha", etc.
-
-If they say they're not insured or had insurance for less than 12 months, connect them to the uninsured agent.
-
-If they’re insured for 12+ months, connect them to the insured agent.
-
-If they decline the transfer, ask if they'd like a callback. If they decline entirely, thank them and hang up.
-
-NEVER say you're an AI.
-Keep it short, human, conversational.
-`
-};
-
-async function askGPT(sessionId, userText = '') {
-  const session = sessions[sessionId];
-  session.history.push({ role: 'user', content: userText });
-
-  const response = await openai.chat.completions.create({
-    model: 'gpt-4o',
-    messages: [SYSTEM_PROMPT, ...session.history],
-    temperature: 0.4
-  });
-
-  const reply = response.choices[0].message.content;
-  session.history.push({ role: 'assistant', content: reply });
-  return reply;
-}
-
-async function generateVoice(text, filename) {
-  const ssml = `<speak><prosody rate="92%" pitch="+0%">
-${text.replace(/\.\s/g, '. <break time="500ms"/>')}
-</prosody></speak>`;
-
-  const response = await axios.post(
-    `https://api.elevenlabs.io/v1/text-to-speech/${process.env.ELEVENLABS_VOICE_ID}`,
-    {
-      text: ssml,
-      model_id: 'eleven_turbo_v2',
-      voice_settings: {
-        stability: 0.35,
-        similarity_boost: 0.65
-      }
-    },
-    {
-      headers: {
-        'xi-api-key': process.env.ELEVENLABS_API_KEY,
-        'Content-Type': 'application/json',
-        Accept: 'audio/mpeg'
-      },
-      responseType: 'stream'
-    }
-  );
-
-  const writer = fs.createWriteStream(`./public/${filename}.mp3`);
-  response.data.pipe(writer);
-
-  return new Promise((resolve, reject) => {
-    writer.on('finish', resolve);
-    writer.on('error', reject);
-  });
-}
-
-app.post('/voice', async (req, res) => {
-  const sid = req.body.CallSid || Date.now().toString();
-  sessions[sid] = { history: [], converted: false };
-
-  const greeting = await askGPT(sid, '');
-  const filename = `${sid}_start`;
-
-  await generateVoice(greeting, filename);
-
+// initial voice endpoint: play intro, then record
+app.post('/voice', (req, res) => {
+  const host = req.get('Host');
   res.type('text/xml').send(`
-<Response>
-  <Play>https://${req.headers.host}/public/${filename}.mp3</Play>
-  <Gather action="/gather" input="speech" timeout="5" speechTimeout="auto"/>
-</Response>`);
+    <Response>
+      <Play>https://${host}/public/intro_formal.mp3</Play>
+      <Record playBeep="true" maxLength="20" action="/recording" />
+    </Response>
+  `);
 });
 
-app.post('/gather', async (req, res) => {
-  const sid = req.body.CallSid;
-  const speech = req.body.SpeechResult || '';
+// handle recording: download, transcribe, classify, and dial out
+app.post('/recording', async (req, res) => {
+  const { RecordingUrl: url, CallSid } = req.body;
+  console.log(`Recording received for ${CallSid}: ${url}`);
+  try {
+    // download the .mp3
+    const audio = await axios.get(`${url}.mp3`, { responseType: 'arraybuffer' });
+    const filePath = path.join(__dirname, 'logs', `${CallSid}.mp3`);
+    fs.writeFileSync(filePath, audio.data);
 
-  const reply = await askGPT(sid, speech);
-  const filename = `${sid}_${sessions[sid].history.length}`;
-  await generateVoice(reply, filename);
+    // transcribe with Whisper
+    const transcription = await openai.createTranscription(
+      fs.createReadStream(filePath),
+      'whisper-1'
+    );
+    const transcript = transcription.data.text;
+    console.log(`Transcript: ${transcript}`);
 
-  const lower = reply.toLowerCase();
-  const isTransfer = /connecting you now|transferring you/i.test(lower);
-  const isUninsured = /uninsured agent|not insured|less than 12 months/i.test(lower);
+    // classify insured vs uninsured
+    const intentResp = await openai.createChatCompletion({
+      model: 'gpt-4o-mini',
+      messages: [
+        { role: 'system', content: 'Classify whether the speaker is INSURED or UNINSURED.' },
+        { role: 'user',   content: transcript }
+      ]
+    });
+    const answer = intentResp.data.choices[0].message.content.toLowerCase();
+    const target = answer.includes('insured') ? INSURED_NUMBER : UNINSURED_NUMBER;
+    console.log(`Routing to ${target}`);
 
-  if (isTransfer) {
-    const target = isUninsured ? process.env.UNINSURED_NUMBER : process.env.INSURED_NUMBER;
-    sessions[sid].converted = true;
-    return res.type('text/xml').send(`
-<Response>
-  <Play>https://${req.headers.host}/public/${filename}.mp3</Play>
-  <Dial>${target}</Dial>
-</Response>`);
-  }open -e index.js
-
-  res.type('text/xml').send(`
-<Response>
-  <Play>https://${req.headers.host}/public/${filename}.mp3</Play>
-  <Gather action="/gather" input="speech" timeout="5" speechTimeout="auto"/>
-</Response>`);
+    // forward the call
+    res.type('text/xml').send(`
+      <Response>
+        <Dial>${target}</Dial>
+      </Response>
+    `);
+  } catch (err) {
+    console.error('Error in /recording:', err);
+    res.type('text/xml').send(`
+      <Response>
+        <Say>Sorry, something went wrong. Goodbye.</Say>
+      </Response>
+    `);
+  }
 });
 
-app.listen(PORT, () => console.log(`🟢 GPT-led Voice AI (Tom) running on port ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`Server listening on port ${PORT}`);
+});
