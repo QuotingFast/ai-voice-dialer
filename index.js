@@ -1,4 +1,3 @@
-// index.js
 const express = require('express');
 const fs = require('fs');
 const axios = require('axios');
@@ -8,41 +7,82 @@ const twilio = require('twilio');
 
 const app = express();
 
-// ─── DEBUG: Log whether the OpenAI key is present ───────────────────────────────
+// ─── DEBUG: Log environment variables ───────────────────────────────────────────
 console.log("🔑 OPENAI_API_KEY set?", !!process.env.OPENAI_API_KEY);
+console.log("🔑 ELEVENLABS_API_KEY set?", !!process.env.ELEVENLABS_API_KEY);
+console.log("🔑 TWILIO_ACCOUNT_SID set?", !!process.env.TWILIO_ACCOUNT_SID);
 
 const PORT = process.env.PORT || 10000;
 
-// ─── API KEYS FROM ENVIRONMENT ───────────────────────────────────────────────────
-const ELEVENLABS_API_KEY   = process.env.ELEVENLABS_API_KEY;
-const ELEVENLABS_VOICE_ID  = process.env.ELEVENLABS_VOICE_ID || "1t1EeRixsJrKbiF1zwM6";
-const OPENAI_API_KEY       = process.env.OPENAI_API_KEY;
-const TWILIO_ACCOUNT_SID   = process.env.TWILIO_ACCOUNT_SID;
-const TWILIO_AUTH_TOKEN    = process.env.TWILIO_AUTH_TOKEN;
-const REP_PHONE_NUMBER     = process.env.REP_PHONE_NUMBER   || "+18889711908";
-const INSURED_NUMBER       = process.env.INSURED_NUMBER     || "+18336404820";
-const UNINSURED_NUMBER     = process.env.UNINSURED_NUMBER   || "+18333961174";
-const RENDER_BASE_URL      = process.env.RENDER_BASE_URL    || "https://ai-voice-funnel-1.onrender.com";
+// ─── API KEYS FROM ENVIRONMENT ─────────────────────────────────────────────────
+const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
+const ELEVENLABS_VOICE_ID = process.env.ELEVENLABS_VOICE_ID || "1t1EeRixsJrKbiF1zwM6";
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
+const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN;
+const REP_PHONE_NUMBER = process.env.REP_PHONE_NUMBER || "+18889711908";
+const INSURED_NUMBER = process.env.INSURED_NUMBER || "+18336404820";
+const UNINSURED_NUMBER = process.env.UNINSURED_NUMBER || "+18333961174";
+const RENDER_BASE_URL = process.env.RENDER_BASE_URL || "https://ai-voice-funnel-1.onrender.com";
 
-// ─── CLIENTS ─────────────────────────────────────────────────────────────────────
+// ─── VALIDATE ENVIRONMENT VARIABLES ────────────────────────────────────────────
+const requiredVars = ['ELEVENLABS_API_KEY', 'OPENAI_API_KEY', 'TWILIO_ACCOUNT_SID', 'TWILIO_AUTH_TOKEN'];
+requiredVars.forEach(varName => {
+  if (!process.env[varName]) {
+    console.error(`❌ Missing required environment variable: ${varName}`);
+    process.exit(1);
+  }
+});
+
+// ─── CLIENTS ──────────────────────────────────────────────────────────────────
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 const twilioClient = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
 
-// ─── IN-MEMORY SESSION STORE ────────────────────────────────────────────────────
+// ─── IN-MEMORY SESSION STORE ──────────────────────────────────────────────────
 const sessions = {};
 
-// ─── RESPONSE TEMPLATES & HELPERS ────────────────────────────────────────────────
+// Clean up old sessions periodically
+setInterval(() => {
+  const cutoff = new Date(Date.now() - 3600000); // 1 hour
+  Object.keys(sessions).forEach(sid => {
+    if (sessions[sid].createdAt < cutoff) {
+      delete sessions[sid];
+    }
+  });
+}, 600000); // Every 10 minutes
+
+// ─── RESPONSE TEMPLATES & HELPERS ─────────────────────────────────────────────
 const responseTemplates = {
-  greeting: [ /* … */ ],
-  insuranceContinuity: [ /* … */ ],
-  insuranceCompany: [ /* … */ ],
-  duration: [ /* … */ ],
-  transfer: [ /* … */ ],
-  clarification: [ /* … */ ],
-  thankyou: [ /* … */ ],
-  callbackRequest: [ /* … */ ],
-  callbackConfirmation: [ /* … */ ],
-  notInterested: [ /* … */ ],
+  greeting: [
+    "Hello! This is Alex calling about your auto insurance. Do you have a moment to chat?",
+    "Hi there! I'm calling about your car insurance options. Is now a good time?",
+    "Good day! We're reaching out about potential savings on your auto insurance. Can we talk briefly?"
+  ],
+  insuranceContinuity: [
+    "Are you currently insured?",
+    "Do you have active auto insurance right now?",
+    "Are you currently covered by an auto insurance policy?"
+  ],
+  insuranceCompany: [
+    "Which company provides your current auto insurance?",
+    "Who is your current auto insurance provider?",
+    "What's the name of your current auto insurance company?"
+  ],
+  duration: [
+    "How long have you been with your current insurance provider?",
+    "For how many years have you had your current auto insurance?",
+    "How many years have you been with your present insurance company?"
+  ],
+  transfer: [
+    "Let me connect you with one of our licensed agents who can help.",
+    "I'll transfer you to an agent who can assist with your specific needs.",
+    "Please hold while I connect you with a specialist."
+  ],
+  clarification: [
+    "I didn't quite catch that. Could you please repeat?",
+    "Could you say that again please?",
+    "I missed that, could you repeat your answer?"
+  ]
 };
 
 function getRandomResponse(type) {
@@ -64,51 +104,87 @@ function createSSML(text, emphasis = "moderate") {
   return `<speak><prosody rate="95%" pitch="+0%" volume="loud">${text.replace(/\./g, '<break time="500ms"/>')}</prosody></speak>`;
 }
 
-// ─── AUDIO GENERATION ────────────────────────────────────────────────────────────
+// ─── AUDIO GENERATION ─────────────────────────────────────────────────────────
 async function generateAudio(text, filename, expressiveness = "medium") {
-  if (!ELEVENLABS_API_KEY) throw new Error("ElevenLabs API key not configured");
+  if (!ELEVENLABS_API_KEY) {
+    throw new Error("ElevenLabs API key not configured");
+  }
+
   const voiceSettings = {
-    low:    { stability: 0.3, similarity_boost: 0.75 },
+    low: { stability: 0.3, similarity_boost: 0.75 },
     medium: { stability: 0.35, similarity_boost: 0.65 },
-    high:   { stability: 0.25, similarity_boost: 0.6 },
+    high: { stability: 0.25, similarity_boost: 0.6 },
   };
+
   const body = {
     text: addSpeechMarkers(text),
     model_id: 'eleven_turbo_v2',
     voice_settings: voiceSettings[expressiveness] || voiceSettings.medium,
   };
-  const response = await axios.post(
-    `https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}`,
-    body,
-    { headers: { 'xi-api-key': ELEVENLABS_API_KEY }, responseType: 'stream' }
-  );
-  const out = fs.createWriteStream(`./public/${filename}.mp3`);
-  response.data.pipe(out);
-  return new Promise((res, rej) => {
-    out.on('finish',  () => res());
-    out.on('error',   err => rej(err));
-  });
-}
 
-async function generateIntroVariations() {
-  if (!fs.existsSync('./public')) fs.mkdirSync('./public', { recursive: true });
-  const intros = [
-    { text: getRandomResponse('greeting'), filename: "intro1", expressiveness: "medium" },
-    { text: getRandomResponse('greeting'), filename: "intro2", expressiveness: "high"  },
-    { text: getRandomResponse('greeting'), filename: "intro3", expressiveness: "high"  },
-    { text: getRandomResponse('greeting'), filename: "intro4", expressiveness: "medium" },
-  ];
-  for (const intro of intros) {
-    await generateAudio(intro.text, intro.filename, intro.expressiveness);
+  try {
+    const response = await axios.post(
+      `https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}`,
+      body,
+      { 
+        headers: { 
+          'xi-api-key': ELEVENLABS_API_KEY,
+          'Content-Type': 'application/json'
+        },
+        responseType: 'stream',
+        timeout: 10000
+      }
+    );
+
+    if (!fs.existsSync('./public')) {
+      fs.mkdirSync('./public', { recursive: true });
+    }
+
+    const out = fs.createWriteStream(`./public/${filename}.mp3`);
+    response.data.pipe(out);
+    
+    return new Promise((resolve, reject) => {
+      out.on('finish', () => resolve());
+      out.on('error', err => reject(err));
+    });
+  } catch (error) {
+    console.error('ElevenLabs API Error:', error.response?.data || error.message);
+    throw error;
   }
 }
 
-// ─── OPENAI-POWERED PARSING ─────────────────────────────────────────────────────
+// Clean up old audio files
+const cleanupAudioFiles = () => {
+  const dir = './public';
+  if (!fs.existsSync(dir)) return;
+
+  fs.readdir(dir, (err, files) => {
+    if (err) return;
+    const now = Date.now();
+    files.forEach(file => {
+      const filePath = path.join(dir, file);
+      try {
+        const stat = fs.statSync(filePath);
+        if (now - stat.mtimeMs > 3600000) { // Older than 1 hour
+          fs.unlinkSync(filePath);
+        }
+      } catch (e) {
+        console.error('Error cleaning up file:', filePath, e);
+      }
+    });
+  });
+};
+
+// Run cleanup every hour
+setInterval(cleanupAudioFiles, 3600000);
+
+// ─── OPENAI-POWERED PARSING ──────────────────────────────────────────────────
 async function parseUserResponse(speech, currentQuestion = "", dialogueState = "") {
   if (!OPENAI_API_KEY) throw new Error("OpenAI API key not configured");
+
   try {
     const completion = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
+      model: 'gpt-3.5-turbo',
       messages: [
         {
           role: 'system',
@@ -118,6 +194,7 @@ async function parseUserResponse(speech, currentQuestion = "", dialogueState = "
       ],
       temperature: 0.2
     });
+
     const json = completion.choices[0].message.content.trim();
     return JSON.parse(json);
   } catch (e) {
@@ -128,15 +205,20 @@ async function parseUserResponse(speech, currentQuestion = "", dialogueState = "
 
 async function extractNumber(speech) {
   if (!OPENAI_API_KEY) throw new Error("OpenAI API key not configured");
+
   try {
     const completion = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
+      model: 'gpt-3.5-turbo',
       messages: [
-        { role: 'system', content: `Extract any number or duration mentioned in: "${speech}". Return JSON { number: <value> }. JSON only.` },
-        { role: 'user',   content: speech }
+        { 
+          role: 'system', 
+          content: `Extract any number or duration mentioned in: "${speech}". Return JSON { number: <value> }. JSON only.` 
+        },
+        { role: 'user', content: speech }
       ],
       temperature: 0
     });
+
     return JSON.parse(completion.choices[0].message.content.trim());
   } catch (e) {
     console.error('extractNumber error:', e);
@@ -144,36 +226,124 @@ async function extractNumber(speech) {
   }
 }
 
-// ─── HTTP ROUTES ─────────────────────────────────────────────────────────────────
+// ─── HTTP ROUTES ──────────────────────────────────────────────────────────────
 app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
 app.use('/public', express.static(path.join(__dirname, 'public')));
 
 app.post('/voice', async (req, res) => {
   try {
+    if (!req.body || !req.body.From) {
+      return res.status(400).json({ error: 'Invalid request format' });
+    }
+
+    const callSid = req.body.CallSid || 'test-' + Date.now();
+    if (!sessions[callSid]) {
+      sessions[callSid] = {
+        createdAt: new Date(),
+        from: req.body.From,
+        history: []
+      };
+    }
+
     const chat = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
+      model: 'gpt-3.5-turbo',
       messages: [
-        { role: 'system', content: "You are a helpful call assistant." },
-        { role: 'user',   content: JSON.stringify(req.body) }
+        { 
+          role: 'system', 
+          content: `You are an insurance call assistant. Keep responses under 2 sentences. 
+                    Current call from: ${req.body.From}. Be polite and professional.`
+        },
+        { role: 'user', content: JSON.stringify(req.body) }
       ],
-      temperature: 0.2
+      temperature: 0.5
     });
+
     const reply = chat.choices[0].message.content;
-    const tts = await axios.post(
+    console.log('Generated response:', reply);
+
+    // Add to session history
+    sessions[callSid].history.push({
+      timestamp: new Date(),
+      request: req.body,
+      response: reply
+    });
+
+    const ttsResponse = await axios.post(
       `https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}`,
-      { text: reply, model_id: 'eleven_turbo_v2', voice_settings: { stability:0.35, similarity_boost:0.65 } },
-      { headers: { 'xi-api-key': ELEVENLABS_API_KEY }, responseType: 'stream' }
+      { 
+        text: reply, 
+        model_id: 'eleven_turbo_v2', 
+        voice_settings: { 
+          stability: 0.35, 
+          similarity_boost: 0.65 
+        } 
+      },
+      { 
+        headers: { 
+          'xi-api-key': ELEVENLABS_API_KEY,
+          'Content-Type': 'application/json'
+        },
+        responseType: 'stream',
+        timeout: 10000
+      }
     );
+
     res.set('Content-Type', 'audio/mpeg');
-    tts.data.pipe(res);
+    ttsResponse.data.pipe(res);
+
   } catch (err) {
-    console.error('/voice error:', err);
+    console.error('/voice error:', err.response?.data || err.message);
+    res.status(500).json({ 
+      error: 'Voice generation failed',
+      details: err.response?.data || err.message
+    });
+  }
+});
+
+app.post('/twilio-webhook', async (req, res) => {
+  try {
+    const twilioSignature = req.headers['x-twilio-signature'];
+    const url = RENDER_BASE_URL + '/twilio-webhook';
+    const params = req.body;
+
+    if (!twilio.validateRequest(
+      TWILIO_AUTH_TOKEN,
+      twilioSignature,
+      url,
+      params
+    )) {
+      return res.status(403).send('Invalid Twilio request');
+    }
+
+    res.type('text/xml');
+    res.send(`
+      <Response>
+        <Play>${RENDER_BASE_URL}/public/intro1.mp3</Play>
+      </Response>
+    `);
+  } catch (err) {
+    console.error('Twilio webhook error:', err);
     res.status(500).send('Internal Server Error');
   }
 });
 
-// ─── START SERVER ───────────────────────────────────────────────────────────────
+// Generate intro variations on startup
+(async () => {
+  try {
+    await generateAudio(
+      getRandomResponse('greeting'), 
+      'intro1', 
+      'medium'
+    );
+    console.log('✅ Generated intro audio files');
+  } catch (err) {
+    console.error('Failed to generate intro audio:', err);
+  }
+})();
+
+// ─── START SERVER ─────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
   console.log(`✔️  Server running on port ${PORT}`);
+  console.log(`🔊 Public URL: ${RENDER_BASE_URL}`);
 });
