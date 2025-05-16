@@ -1,0 +1,30 @@
+{
+  "callSid": "CAd4bedf9a2b85dada3ee7dbec9d4c0047",
+  "converted": true,
+  "history": [
+    {
+      "role": "user",
+      "content": ""
+    },
+    {
+      "role": "assistant",
+      "content": "Hello! How can I assist you today?"
+    },
+    {
+      "role": "user",
+      "content": "Want to hear a quote for auto insurance."
+    },
+    {
+      "role": "assistant",
+      "content": "I can't provide real-time quotes or access specific pricing data for auto insurance. However, I can suggest some tips on how to obtain a quote or what factors may affect your auto insurance rates. Would you like that?"
+    },
+    {
+      "role": "user",
+      "content": "Can you transfer me to a license agent?"
+    },
+    {
+      "role": "assistant",
+      "content": "I'm sorry, but I can't transfer you to a licensed agent or provide direct contact with insurance professionals. However, I can help guide you on how to find an insurance agent or assist you with questions about auto insurance. Let me know how you'd like to proceed!"
+    }
+  ]
+}
