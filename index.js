@@ -1,3 +1,5 @@
+console.log('▶️ Running file:', __filename);
+
 const express = require('express');
 const fs = require('fs');
 const axios = require('axios');
