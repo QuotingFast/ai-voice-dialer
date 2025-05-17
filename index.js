@@ -6,6 +6,7 @@ const axios = require('axios');
 const path = require('path');
 const OpenAI = require('openai');
 const twilio = require('twilio');
+const { parseUserResponse, extractNumber } = require('./parser');
 
 const app = express();
 
@@ -181,52 +182,7 @@ const cleanupAudioFiles = () => {
 setInterval(cleanupAudioFiles, 3600000);
 
 // ─── OPENAI-POWERED PARSING ──────────────────────────────────────────────────
-async function parseUserResponse(speech, currentQuestion = "", dialogueState = "") {
-  if (!OPENAI_API_KEY) throw new Error("OpenAI API key not configured");
-
-  try {
-    const completion = await openai.chat.completions.create({
-      model: 'gpt-3.5-turbo',
-      messages: [
-        {
-          role: 'system',
-          content: `Context: "${currentQuestion}", State: "${dialogueState}". Identify intent, sentiment, extracted_info, confidence. Return JSON.`,
-        },
-        { role: 'user', content: speech }
-      ],
-      temperature: 0.2
-    });
-
-    const json = completion.choices[0].message.content.trim();
-    return JSON.parse(json);
-  } catch (e) {
-    console.error('parseUserResponse error:', e);
-    return { intent: "unknown", sentiment: "neutral", extracted_info: {}, confidence: "low" };
-  }
-}
-
-async function extractNumber(speech) {
-  if (!OPENAI_API_KEY) throw new Error("OpenAI API key not configured");
-
-  try {
-    const completion = await openai.chat.completions.create({
-      model: 'gpt-3.5-turbo',
-      messages: [
-        { 
-          role: 'system', 
-          content: `Extract any number or duration mentioned in: "${speech}". Return JSON { number: <value> }. JSON only.` 
-        },
-        { role: 'user', content: speech }
-      ],
-      temperature: 0
-    });
-
-    return JSON.parse(completion.choices[0].message.content.trim());
-  } catch (e) {
-    console.error('extractNumber error:', e);
-    return null;
-  }
-}
+// parseUserResponse and extractNumber are now provided by './parser'.
 
 // ─── HTTP ROUTES ──────────────────────────────────────────────────────────────
 app.use(express.urlencoded({ extended: false }));
@@ -398,7 +354,11 @@ app.post('/twilio-webhook', async (req, res) => {
 })();
 
 // ─── START SERVER ─────────────────────────────────────────────────────────────
-app.listen(PORT, () => {
-  console.log(`✔️  Server running on port ${PORT}`);
-  console.log(`🔊 Public URL: ${RENDER_BASE_URL}`);
-});
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log('✔ Server running on port', PORT);
+    console.log(`🔊 Public URL: ${RENDER_BASE_URL}`);
+  });
+}
+
+module.exports = { parseUserResponse, extractNumber };
