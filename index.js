@@ -1,4 +1,4 @@
-console.log('▶️ Running file:', __filename);
+console.log('▶ Starting AI voice dialer');
 
 const express = require('express');
 const fs = require('fs');
@@ -399,6 +399,6 @@ app.post('/twilio-webhook', async (req, res) => {
 
 // ─── START SERVER ─────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
-  console.log(`✔️  Server running on port ${PORT}`);
+  console.log(`✔ Server listening on port ${PORT}`);
   console.log(`🔊 Public URL: ${RENDER_BASE_URL}`);
 });
