@@ -1,3 +1,5 @@
+
+require('dotenv').config();
 console.log('▶ Starting AI voice dialer');
 
 const express = require('express');
