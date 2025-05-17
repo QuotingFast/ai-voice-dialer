@@ -383,7 +383,7 @@ app.post('/twilio-webhook', async (req, res) => {
 });
 
 
-// Generate intro variations on startup
+// Generate a single intro clip on startup
 (async () => {
   try {
     await generateAudio(
@@ -391,7 +391,7 @@ app.post('/twilio-webhook', async (req, res) => {
       'intro1', 
       'medium'
     );
-    console.log('✅ Generated intro audio files');
+    console.log('✅ Generated intro audio file');
   } catch (err) {
     console.error('Failed to generate intro audio:', err);
   }
